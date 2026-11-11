@@ -356,6 +356,12 @@
     <ClInclude Include="..\contrib\xxhash\xxhash.h">
       <Filter>Header Files\Contrib</Filter>
     </ClInclude>
+    <ClInclude Include="..\contrib\miniz\miniz.h">
+      <Filter>Header Files\Contrib</Filter>
+    </ClInclude>
+    <ClInclude Include="ReportOutput.h">
+      <Filter>Header Files\Core</Filter>
+    </ClInclude>
     <ClInclude Include="UiApplication.h">
       <Filter>Header Files\User Interface\Framework</Filter>
     </ClInclude>
@@ -529,6 +535,9 @@
     <ClCompile Include="CsvLoader.cpp">
       <Filter>Source Files\Core</Filter>
     </ClCompile>
+    <ClCompile Include="ReportOutput.cpp">
+      <Filter>Source Files\Core</Filter>
+    </ClCompile>
     <ClCompile Include="WinDirStatModel.cpp">
       <Filter>Source Files\Core</Filter>
     </ClCompile>
@@ -605,6 +614,9 @@
       <Filter>Source Files\Core</Filter>
     </ClCompile>
     <ClCompile Include="..\contrib\xxhash\xxhash.c">
+      <Filter>Source Files\Contrib</Filter>
+    </ClCompile>
+    <ClCompile Include="..\contrib\miniz\miniz.c">
       <Filter>Source Files\Contrib</Filter>
     </ClCompile>
     <ClCompile Include="LegacyOsCompat.cpp">

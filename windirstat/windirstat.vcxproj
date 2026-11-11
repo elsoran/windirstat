@@ -107,7 +107,7 @@ POWERSHELL.EXE -NoLogo -ExecutionPolicy Unrestricted -NoProfile -File "$(Project
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
     <ClCompile>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>_DEBUG;WINVER=_WIN32_WINNT_WIN7;_WIN32_WINNT=_WIN32_WINNT_WIN7;_ALLOW_RTCc_IN_STL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;WINVER=_WIN32_WINNT_WIN7;_WIN32_WINNT=_WIN32_WINNT_WIN7;_ALLOW_RTCc_IN_STL;MINIZ_NO_STDIO;MINIZ_NO_ZLIB_COMPATIBLE_NAMES;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <SmallerTypeCheck>false</SmallerTypeCheck>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -127,7 +127,7 @@ POWERSHELL.EXE -NoLogo -ExecutionPolicy Unrestricted -NoProfile -File "$(Project
     <ClCompile>
       <AdditionalOptions>/utf-8 /Gw /GA /Ob3 /Zc:throwingNew $(ExternalCompilerOptions)</AdditionalOptions>
       <Optimization>MaxSpeed</Optimization>
-      <PreprocessorDefinitions>NDEBUG;WINVER=_WIN32_WINNT_WIN7;_WIN32_WINNT=_WIN32_WINNT_WIN7;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;WINVER=_WIN32_WINNT_WIN7;_WIN32_WINNT=_WIN32_WINNT_WIN7;MINIZ_NO_STDIO;MINIZ_NO_ZLIB_COMPATIBLE_NAMES;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
@@ -184,6 +184,7 @@ POWERSHELL.EXE -NoLogo -ExecutionPolicy Unrestricted -NoProfile -File "$(Project
     <ClInclude Include="HelpersInterface.h" />
     <ClInclude Include="HelpersTasks.h" />
     <ClInclude Include="..\contrib\xxhash\xxhash.h" />
+    <ClInclude Include="..\contrib\miniz\miniz.h" />
     <ClInclude Include="Pages\PagePrompts.h" />
     <ClInclude Include="Views\ControlView.h" />
     <ClInclude Include="Finder.h" />
@@ -210,6 +211,7 @@ POWERSHELL.EXE -NoLogo -ExecutionPolicy Unrestricted -NoProfile -File "$(Project
     <ClInclude Include="Constants.h" />
     <ClInclude Include="BlockingQueue.h" />
     <ClInclude Include="CsvLoader.h" />
+    <ClInclude Include="ReportOutput.h" />
     <ClInclude Include="WinDirStatModel.h" />
     <ClInclude Include="FinderBasic.h" />
     <ClInclude Include="Item.h" />
@@ -267,6 +269,7 @@ POWERSHELL.EXE -NoLogo -ExecutionPolicy Unrestricted -NoProfile -File "$(Project
     <ClCompile Include="Controls\Sunburst.cpp" />
     <ClCompile Include="Controls\XYSlider.cpp" />
     <ClCompile Include="CsvLoader.cpp" />
+    <ClCompile Include="ReportOutput.cpp" />
     <ClCompile Include="DarkMode.cpp" />
     <ClCompile Include="UiAppearance.cpp" />
     <ClCompile Include="UiControls.cpp" />
@@ -294,6 +297,9 @@ POWERSHELL.EXE -NoLogo -ExecutionPolicy Unrestricted -NoProfile -File "$(Project
     <ClCompile Include="HelpersTasks.cpp">
     </ClCompile>
     <ClCompile Include="..\contrib\xxhash\xxhash.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\contrib\miniz\miniz.c">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="LegacyOsCompat.cpp">
@@ -403,6 +409,15 @@ POWERSHELL.EXE -NoLogo -ExecutionPolicy Unrestricted -NoProfile -File "$(Project
   <Target Name="DownloadXXHash" BeforeTargets="PrepareForBuild">
     <MakeDir Directories="$([System.IO.Path]::GetDirectoryName('$(XXHashHeaderPath)'))" />
     <Exec Condition="!Exists('$(XXHashHeaderPath)') Or !Exists('$(XXHashSourcePath)')" Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$tag = 'v0.8.3'; try { $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/Cyan4973/xxHash/releases/latest' -UseBasicParsing -TimeoutSec 5; if ($release.tag_name) { $tag = $release.tag_name } } catch {}; if (!(Test-Path '$(XXHashHeaderPath)')) { Invoke-WebRequest -Uri ('https://raw.githubusercontent.com/Cyan4973/xxHash/' + $tag + '/xxhash.h') -OutFile '$(XXHashHeaderPath)' -UseBasicParsing }; if (!(Test-Path '$(XXHashSourcePath)')) { Invoke-WebRequest -Uri ('https://raw.githubusercontent.com/Cyan4973/xxHash/' + $tag + '/xxhash.c') -OutFile '$(XXHashSourcePath)' -UseBasicParsing }&quot;" />
+  </Target>
+  <PropertyGroup Label="Miniz">
+    <MinizVersion>3.1.2</MinizVersion>
+    <MinizSha256>f0446d863f9c19926ad9483c523fdc42e42b8d4a6a431d27e09d49c79a140d9a</MinizSha256>
+    <MinizDir>$(MSBuildThisFileDirectory)..\contrib\miniz</MinizDir>
+    <MinizStamp>$(MinizDir)\miniz-$(MinizVersion)-$(MinizSha256).stamp</MinizStamp>
+  </PropertyGroup>
+  <Target Name="DownloadMiniz" BeforeTargets="PrepareForBuild">
+    <Exec Condition="!Exists('$(MinizStamp)') Or !Exists('$(MinizDir)\miniz.h') Or !Exists('$(MinizDir)\miniz.c')" Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)Build\Download Miniz.ps1&quot; -Destination &quot;$(MinizDir)&quot; -Version $(MinizVersion) -Sha256 $(MinizSha256)" />
   </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="PropertySheets">

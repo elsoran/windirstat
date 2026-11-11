@@ -7,11 +7,17 @@
 #include "pch.h"
 #include "CsvLoader.h"
 #include "FinderMtp.h"
+#include "ReportOutput.h"
 #include "StorageSource.h"
 
 static bool IsJsonPath(const std::wstring& path)
 {
     return path.size() >= 5 && _wcsicmp(path.c_str() + path.size() - 5, L".json") == 0;
+}
+
+static bool IsZipPath(const std::wstring& path)
+{
+    return path.size() >= 4 && _wcsicmp(path.c_str() + path.size() - 4, L".zip") == 0;
 }
 
 // Wide string → UTF-8; Localization has no reverse equivalent so we keep this here
@@ -326,7 +332,7 @@ static CItem* BuildAndAttachItem(const std::wstring& namePath, const std::wstrin
     return newitem;
 }
 
-static CItem* LoadResultsCsv(std::ifstream& reader)
+static CItem* LoadResultsCsv(std::istream& reader)
 {
     CItem* newroot = nullptr;
     std::string linebuf;
@@ -414,7 +420,7 @@ static CItem* LoadResultsCsv(std::ifstream& reader)
 
 // ── JSON load ─────────────────────────────────────────────────────────────────
 
-static CItem* LoadResultsJson(std::ifstream& reader)
+static CItem* LoadResultsJson(std::istream& reader)
 {
     // Build the same column-name → field-index mapping reused from CSV
     const std::unordered_map<std::wstring, DWORD> keyToField =
@@ -478,6 +484,21 @@ static CItem* LoadResultsJson(std::ifstream& reader)
 
 CItem* LoadResults(const std::wstring& path)
 {
+    // The entry's name picks the format, so the archive itself can be named anything
+    if (IsZipPath(path))
+    {
+        ReportZipLoad zip;
+        if (!zip.Open(path)) return nullptr;
+        if (zip.Stream().peek() == 0xEF) zip.Stream().ignore(3);
+        CItem* newroot = zip.Json() ? LoadResultsJson(zip.Stream()) : LoadResultsCsv(zip.Stream());
+        if (newroot != nullptr && !zip.Finish())
+        {
+            delete newroot;
+            return nullptr;
+        }
+        return newroot;
+    }
+
     std::ifstream reader(path);
     std::vector<char> buffer(1ul * wds::Mi);
     reader.rdbuf()->pubsetbuf(buffer.data(), buffer.size());
@@ -548,7 +569,7 @@ static std::unordered_map<const CItem*, LONGLONG>
 static constexpr size_t ReportBufferSize = 64 * 1024;
 
 // Write complete rows in chunks while retaining the buffer for the next rows.
-static bool FlushReportBuffer(std::ofstream& outf, std::string& buffer, const bool finish = false)
+static bool FlushReportBuffer(std::ostream& outf, std::string& buffer, const bool finish = false)
 {
     if (buffer.size() < ReportBufferSize && !finish) return true;
     outf.write(buffer.data(), static_cast<std::streamsize>(buffer.size()));
@@ -557,7 +578,7 @@ static bool FlushReportBuffer(std::ofstream& outf, std::string& buffer, const bo
     return outf.good();
 }
 
-static bool SaveResultsCsv(std::ofstream& outf, const std::vector<const CItem*>& items,
+static bool SaveResultsCsv(std::ostream& outf, const std::vector<const CItem*>& items,
     const std::vector<std::wstring>& cols, const std::unordered_map<const CItem*, LONGLONG>& adjustedSizes,
     const bool includeOwner)
 {
@@ -598,7 +619,7 @@ static bool SaveResultsCsv(std::ofstream& outf, const std::vector<const CItem*>&
 
 // ── JSON save ─────────────────────────────────────────────────────────────────
 
-static bool SaveJson(std::ofstream& outf, const std::vector<std::wstring>& cols,
+static bool SaveJson(std::ostream& outf, const std::vector<std::wstring>& cols,
     const auto& items, const auto& writeItem)
 {
     // Pre-quote all column key strings once.
@@ -619,7 +640,7 @@ static bool SaveJson(std::ofstream& outf, const std::vector<std::wstring>& cols,
     return FlushReportBuffer(outf, buffer, true);
 }
 
-static bool SaveResultsJson(std::ofstream& outf,
+static bool SaveResultsJson(std::ostream& outf,
     const std::vector<const CItem*>& items,
     const std::vector<std::wstring>& cols,
     const std::unordered_map<const CItem*, LONGLONG>& adjustedSizes,
@@ -659,6 +680,20 @@ static bool SaveResultsJson(std::ofstream& outf,
     });
 }
 
+// A .zip path holds one entry: x.csv.zip holds x.csv, x.json.zip holds x.json and a bare x.zip holds x.csv
+template <class Save>
+static bool SaveReport(const std::wstring& path, std::ofstream& outf, const Save& save)
+{
+    if (!IsZipPath(path)) return save(outf, IsJsonPath(path));
+
+    std::wstring entry = std::filesystem::path(path).stem().wstring();
+    if (!IsJsonPath(entry) && (entry.size() < 4 || _wcsicmp(entry.c_str() + entry.size() - 4, L".csv") != 0))
+        entry += L".csv";
+
+    ReportZipWriter zip(outf, WideToUtf8(entry));
+    return save(zip, IsJsonPath(entry)) && zip.Finish();
+}
+
 bool SaveResults(const std::wstring& path, CItem* rootItem)
 {
     const std::vector<const CItem*> items       = CollectItems(rootItem);
@@ -684,9 +719,12 @@ bool SaveResults(const std::wstring& path, CItem* rootItem)
     std::ofstream outf(path, std::ios::binary);
     if (!outf.is_open()) return false;
 
-    return IsJsonPath(path)
-        ? SaveResultsJson(outf, items, cols, adjustedSizes, includeOwner)
-        : SaveResultsCsv (outf, items, cols, adjustedSizes, includeOwner);
+    return SaveReport(path, outf, [&](std::ostream& out, const bool json)
+    {
+        return json
+            ? SaveResultsJson(out, items, cols, adjustedSizes, includeOwner)
+            : SaveResultsCsv (out, items, cols, adjustedSizes, includeOwner);
+    });
 }
 
 static std::vector<std::tuple<std::wstring, const CItem*, bool>>
@@ -711,7 +749,7 @@ static std::vector<std::tuple<std::wstring, const CItem*, bool>>
     return dupeItems;
 }
 
-static bool SaveDuplicatesCsv(std::ofstream& outf, const std::vector<std::wstring>& cols,
+static bool SaveDuplicatesCsv(std::ostream& outf, const std::vector<std::wstring>& cols,
     const std::vector<std::tuple<std::wstring, const CItem*, bool>>& dupeItems)
 {
     for (const auto [i, col] : std::views::enumerate(cols))
@@ -738,7 +776,7 @@ static bool SaveDuplicatesCsv(std::ofstream& outf, const std::vector<std::wstrin
 
 // ── JSON dupe save ─────────────────────────────────────────────────────────────
 
-static bool SaveDuplicatesJson(std::ofstream& outf,
+static bool SaveDuplicatesJson(std::ostream& outf,
     const std::vector<std::wstring>& cols,
     const std::vector<std::tuple<std::wstring, const CItem*, bool>>& dupeItems)
 {
@@ -779,14 +817,17 @@ bool SaveDuplicates(const std::wstring& path, const CItemDupe* rootDupe)
 
     const auto dupeItems = CollectAndSortDupes(rootDupe);
 
-    return IsJsonPath(path)
-        ? SaveDuplicatesJson(outf, cols, dupeItems)
-        : SaveDuplicatesCsv (outf, cols, dupeItems);
+    return SaveReport(path, outf, [&](std::ostream& out, const bool json)
+    {
+        return json
+            ? SaveDuplicatesJson(out, cols, dupeItems)
+            : SaveDuplicatesCsv (out, cols, dupeItems);
+    });
 }
 
 // ── permissions save ──────────────────────────────────────────────────────────
 
-static bool SavePermissionsCsv(std::ofstream& outf, const std::vector<std::wstring>& cols,
+static bool SavePermissionsCsv(std::ostream& outf, const std::vector<std::wstring>& cols,
     const std::vector<const CItemPerm*>& items)
 {
     for (const auto [i, col] : std::views::enumerate(cols))
@@ -811,7 +852,7 @@ static bool SavePermissionsCsv(std::ofstream& outf, const std::vector<std::wstri
     return FlushReportBuffer(outf, buffer, true);
 }
 
-static bool SavePermissionsJson(std::ofstream& outf, const std::vector<std::wstring>& cols,
+static bool SavePermissionsJson(std::ostream& outf, const std::vector<std::wstring>& cols,
     const std::vector<const CItemPerm*>& items)
 {
     // cols order: NAME, ACCOUNT, ACCESS, RIGHTS, APPLIES_TO, MASK, INHERITED
@@ -846,7 +887,10 @@ bool SavePermissions(const std::wstring& path, const std::vector<const CItemPerm
         Localization::Lookup(IDS_COL_INHERITANCE)
     };
 
-    return IsJsonPath(path)
-        ? SavePermissionsJson(outf, cols, items)
-        : SavePermissionsCsv (outf, cols, items);
+    return SaveReport(path, outf, [&](std::ostream& out, const bool json)
+    {
+        return json
+            ? SavePermissionsJson(out, cols, items)
+            : SavePermissionsCsv (out, cols, items);
+    });
 }

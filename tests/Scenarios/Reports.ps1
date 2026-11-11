@@ -299,6 +299,135 @@ function Test-PermissionExport {
     Assert-Equal $entry.Access 'Allow' 'The permission export preserves the applied access type'
 }
 
+function Assert-SameBytes {
+    param([byte[]] $Left, [byte[]] $Right, [string] $Message)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        Assert-Equal ([BitConverter]::ToString($sha.ComputeHash($Left))) ([BitConverter]::ToString($sha.ComputeHash($Right))) $Message
+    } finally { $sha.Dispose() }
+}
+
+$script:ZipFields = @('Name', 'Files', 'Folders', 'Logical Size', 'Physical Size', 'Attributes', 'Last Change',
+    'WinDirStat Attributes', 'Index', 'ScanOutcome', 'ScanError')
+
+function Test-ZipByteMatch {
+    param($Context, $Case)
+    $root = New-TestTree
+    $runner = New-TestRunner
+    $plainFormat = if ($Case.Format -eq 'json.zip') { 'json' } else { 'csv' }
+    Invoke-ScanReport $runner @($root) 'plain' -Format $plainFormat -Kind $Case.Kind | Out-Null
+    Invoke-ScanReport $runner @($root) 'zipped' -Format $Case.Format -Kind $Case.Kind | Out-Null
+    $entry = Read-ZipReportEntry (Join-Path $Context.Root "zipped.$($Case.Format)")
+    $inner = if ($Case.Format -eq 'json.zip') { '.json' } else { '.csv' }
+    Assert-Equal $entry.Name "zipped$inner" "The $($Case.Kind) $($Case.Format) entry is named from the leaf"
+    Assert-SameBytes ([IO.File]::ReadAllBytes((Join-Path $Context.Root "plain.$plainFormat"))) $entry.Bytes `
+        "The $($Case.Kind) $($Case.Format) entry matches the plain export"
+}
+
+function Test-ZipRoundTrip {
+    param($Context, $Case)
+    $root = New-TestTree
+    $runner = New-TestRunner
+    $plainFormat = if ($Case.Format -eq 'json.zip') { 'json' } else { 'csv' }
+    Invoke-ScanReport $runner @($root) 'plain' -Format $plainFormat | Out-Null
+    Invoke-ScanReport $runner @($root) 'zipped' -Format $Case.Format | Out-Null
+    $plain = Start-TestApp -Runner $runner -Arguments @('/loadfrom', (Join-Path $Context.Root "plain.$plainFormat"))
+    $fromPlain = Save-AppReport $plain 'from-plain'
+    Stop-TestApp $plain
+    $zip = Start-TestApp -Runner $runner -Arguments @('/loadfrom', (Join-Path $Context.Root "zipped.$($Case.Format)"))
+    $fromZip = Save-AppReport $zip 'from-zip'
+    Stop-TestApp $zip
+    Assert-Sequence (Get-ReportSignature $fromZip $script:ZipFields) (Get-ReportSignature $fromPlain $script:ZipFields) `
+        "A $($Case.Format) load matches the plain load"
+}
+
+function New-ZipArchive {
+    param([string] $Path, [System.Collections.IDictionary] $Entries)
+    $archive = [IO.Compression.ZipFile]::Open($Path, 'Create')
+    try {
+        foreach ($name in $Entries.Keys) {
+            $stream = $archive.CreateEntry($name).Open()
+            try { $stream.Write($Entries[$name], 0, $Entries[$name].Length) } finally { $stream.Dispose() }
+        }
+    } finally { $archive.Dispose() }
+}
+
+function Test-ZipLoadEntries {
+    param($Context, $Case)
+    $root = New-TestTree
+    $runner = New-TestRunner
+    Invoke-ScanReport $runner @($root) 'source' | Out-Null
+    Invoke-ScanReport $runner @($root) 'source' -Format json | Out-Null
+    $csv = [IO.File]::ReadAllBytes((Join-Path $Context.Root 'source.csv'))
+    $json = [IO.File]::ReadAllBytes((Join-Path $Context.Root 'source.json'))
+    $valid = Join-Path $Context.Root 'valid.csv.zip'
+    New-ZipArchive $valid ([ordered]@{ 'source.csv' = $csv })
+    # A bare .zip name says nothing about the format, so the JSON entry has to be read by its own name
+    New-ZipArchive (Join-Path $Context.Root 'inner.zip') ([ordered]@{ 'reports/' = [byte[]]::new(0); 'reports/source.json' = $json })
+    New-ZipArchive (Join-Path $Context.Root 'multi.zip') ([ordered]@{ 'first.csv' = $csv; 'second.csv' = $csv })
+    New-ZipArchive (Join-Path $Context.Root 'empty.zip') ([ordered]@{})
+    $packed = [IO.File]::ReadAllBytes($valid)
+    $packed[[int]($packed.Length / 2)] = $packed[[int]($packed.Length / 2)] -bxor 0xFF
+    [IO.File]::WriteAllBytes((Join-Path $Context.Root 'corrupt.zip'), $packed)
+    foreach ($case in @(
+        @{ Name = 'valid.csv.zip'; Loads = $true }, @{ Name = 'inner.zip'; Loads = $true },
+        @{ Name = 'multi.zip'; Loads = $false }, @{ Name = 'empty.zip'; Loads = $false },
+        @{ Name = 'corrupt.zip'; Loads = $false })) {
+        $app = Start-TestApp -Runner $runner -Arguments @('/loadfrom', (Join-Path $Context.Root $case.Name)) -Hidden
+        Assert-True (-not $app.Process.HasExited) "A $($case.Name) archive does not crash"
+        if ($case.Loads) {
+            Wait-Until { (Get-AppCommandState $app 'ID_REFRESH_ALL').Enabled } "The $($case.Name) scan opens" | Out-Null
+        }
+        Assert-Equal (Get-AppCommandState $app 'ID_REFRESH_ALL').Enabled $case.Loads `
+            "A $($case.Name) archive opens a scan only when it holds one report"
+        Stop-TestApp $app
+    }
+}
+
+function Test-ZipSaveFailure {
+    param($Context, $Case)
+    $root = New-TestTree
+    $runner = New-TestRunner
+    foreach ($leaf in 'scan.csv', 'scan.csv.zip') {
+        $probe = Invoke-TestProcess $runner @('/saveto', (Join-Path $Context.Root "missing\$leaf"), $root)
+        Assert-Equal $probe.ExitCode 1 "Saving $leaf into a missing folder fails"
+    }
+}
+
+function Test-ZipEntryName {
+    param($Context, $Case)
+    $root = New-TestTree
+    $runner = New-TestRunner
+    foreach ($case in @(
+        @{ Leaf = 'scan.zip'; Entry = 'scan.csv' },
+        @{ Leaf = 'Scan.CSV.ZIP'; Entry = 'Scan.CSV' })) {
+        $path = Join-Path $Context.Root $case.Leaf
+        $probe = Invoke-TestProcess $runner @('/saveto', $path, $root)
+        Assert-Equal $probe.ExitCode 0 "Saving $($case.Leaf) succeeds"
+        Assert-Equal (Read-ZipReportEntry $path).Name $case.Entry "The $($case.Leaf) entry keeps its name"
+    }
+}
+
+function Test-ZipTrailingSpace {
+    param($Context, $Case)
+    $root = New-TestTree
+    $runner = New-TestRunner
+    $source = Invoke-ScanReport $runner @($root) 'saved' -Format json
+    $bytes = [IO.File]::ReadAllBytes((Join-Path $Context.Root 'saved.json'))
+    $trailer = [Text.Encoding]::ASCII.GetBytes((' ' * 70 + "`r`n") * 120)
+    Assert-True ($trailer.Length -gt 4KB) 'The trailer is longer than one read from the zip entry'
+    $padded = [byte[]]::new($bytes.Length + $trailer.Length)
+    [Buffer]::BlockCopy($bytes, 0, $padded, 0, $bytes.Length)
+    [Buffer]::BlockCopy($trailer, 0, $padded, $bytes.Length, $trailer.Length)
+    $zip = Join-Path $Context.Root 'padded.json.zip'
+    New-ZipArchive $zip ([ordered]@{ 'saved.json' = $padded })
+    $app = Start-TestApp -Runner $runner -Arguments @('/loadfrom', $zip)
+    $loaded = Save-AppReport $app 'loaded' -Format json
+    Stop-TestApp $app
+    Assert-Sequence (Get-ReportSignature $loaded $script:ZipFields) (Get-ReportSignature $source $script:ZipFields) `
+        'Trailing whitespace after the JSON array does not reject the zip'
+}
+
 foreach ($algorithm in @(@{ Name = 'sha256'; Value = 2 }, @{ Name = 'xxhash'; Value = 5 })) {
     Register-Scenario "reports.duplicates.$($algorithm.Name)" `
         Reports 'Full-file duplicate verification across staged hashing' `
@@ -327,3 +456,23 @@ Register-Scenario reports.malformed-layout Reports 'Malformed persisted integer 
     Test-MalformedLayoutSettings -Tags Desktop,Persistence,External -Requires Windows,Desktop
 Register-Scenario reports.permissions Reports 'Real ACL inheritance agrees across CSV and JSON exports' `
     Test-PermissionExport -Tags Filesystem -Requires Windows,Ntfs
+foreach ($kind in 'Scan', 'Duplicates', 'Permissions') {
+    foreach ($format in 'csv.zip', 'json.zip') {
+        Register-Scenario "reports.zip.$($kind.ToLowerInvariant()).$format" Reports `
+            "A $kind $format export matches the plain report byte for byte" `
+            Test-ZipByteMatch -Tags Filesystem -Data @{ Kind = $kind; Format = $format }
+    }
+}
+foreach ($format in 'csv.zip', 'json.zip') {
+    Register-Scenario "reports.roundtrip.$format" Reports `
+        'A zipped scan load matches the plain load' `
+        Test-ZipRoundTrip -Tags Desktop,Persistence,External -Requires Windows,Desktop -Data @{ Format = $format }
+}
+Register-Scenario reports.zip.load-entries Reports 'Only an archive holding one report loads, read by the entry name' `
+    Test-ZipLoadEntries -Tags External
+Register-Scenario reports.zip.save-failure Reports 'A zip save into a missing folder fails like a plain save' `
+    Test-ZipSaveFailure -Tags Filesystem
+Register-Scenario reports.zip.entry-name Reports 'A bare zip and a mixed-case name keep the entry name' `
+    Test-ZipEntryName -Tags Filesystem
+Register-Scenario reports.zip.trailing-space Reports 'Whitespace after a JSON array still loads from a zip' `
+    Test-ZipTrailingSpace -Tags External -Requires Windows,Desktop

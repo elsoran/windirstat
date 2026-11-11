@@ -21,7 +21,7 @@
 static std::optional<std::wstring> ChooseReportPath(const CDialog::FilePickerMode mode)
 {
     return CDialog::PickFile(mode,
-        std::format(L"{} (*.csv;*.json)|*.csv;*.json|{} (*.*)|*.*||",
+        std::format(L"{} (*.csv;*.json;*.zip)|*.csv;*.json;*.zip|{} (*.*)|*.*||",
         Localization::Lookup(IDS_FILE_FILTER), Localization::Lookup(IDS_ALL_FILES)));
 }
 void CWinDirStatModel::OnUpdateCentralHandler(CCmdUI* pCmdUI)

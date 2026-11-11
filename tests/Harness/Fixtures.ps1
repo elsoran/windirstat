@@ -200,7 +200,7 @@ function Invoke-TestProcess {
 function Invoke-ScanReport {
     param(
         [object] $Runner, [string[]] $Roots, [string] $Name = 'scan',
-        [ValidateSet('csv', 'json')] [string] $Format = 'csv',
+        [ValidateSet('csv', 'json', 'csv.zip', 'json.zip')] [string] $Format = 'csv',
         [ValidateSet('Scan', 'Duplicates', 'Permissions')] [string] $Kind = 'Scan'
     )
     $path = Join-Path $script:Context.Root "$Name.$Format"
@@ -212,8 +212,35 @@ function Invoke-ScanReport {
     return Read-ScanReport $path
 }
 
+function Read-ZipReportEntry {
+    param([string] $Path)
+    $archive = [IO.Compression.ZipFile]::OpenRead($Path)
+    try {
+        $files = @($archive.Entries | Where-Object { -not $_.FullName.EndsWith('/') })
+        if ($files.Count -ne 1) { throw "Expected one file entry in ${Path}: $($files.Count)" }
+        $entry = $files[0]
+        $source = $entry.Open()
+        try {
+            $memory = [IO.MemoryStream]::new()
+            try { $source.CopyTo($memory); $bytes = $memory.ToArray() } finally { $memory.Dispose() }
+        } finally { $source.Dispose() }
+        return [pscustomobject]@{
+            Name = $entry.FullName; Bytes = $bytes
+        }
+    } finally { $archive.Dispose() }
+}
+
 function Read-ScanReport {
     param([string] $Path)
+    $leaf = [IO.Path]::GetFileName($Path)
+    if ($leaf.EndsWith('.zip', [StringComparison]::OrdinalIgnoreCase)) {
+        $entry = Read-ZipReportEntry $Path
+        $text = [Text.UTF8Encoding]::new($false, $true).GetString($entry.Bytes)
+        $rows = if ($entry.Name.EndsWith('.json', [StringComparison]::OrdinalIgnoreCase)) {
+            $text | ConvertFrom-Json -DateKind String
+        } else { $text | ConvertFrom-Csv }
+        return ,@($rows)
+    }
     $rows = if ([IO.Path]::GetExtension($Path) -eq '.json') {
         [IO.File]::ReadAllText($Path) | ConvertFrom-Json -DateKind String
     } else { Import-Csv -LiteralPath $Path -Encoding utf8 }
